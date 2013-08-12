@@ -19,19 +19,52 @@ import math
 import numpy as np
 
 import zipline.finance.trading as trading
+import zipline.utils.math_utils as zp_math
 
 import pandas as pd
+import functools
 
 from . risk import (
     alpha,
     check_entry,
-    choose_treasury,
     information_ratio,
-    sharpe_ratio,
+    choose_treasury,
     sortino_ratio,
 )
 
 log = logbook.Logger('Risk Cumulative')
+
+
+choose_treasury = functools.partial(choose_treasury, lambda *args: '10year',
+                                    compound=False)
+
+
+def sharpe_ratio(algorithm_volatility, annualized_return, treasury_return):
+    """
+    http://en.wikipedia.org/wiki/Sharpe_ratio
+
+    Args:
+        algorithm_volatility (float): Algorithm volatility.
+        algorithm_return (float): Algorithm return percentage.
+        treasury_return (float): Treasury return percentage.
+
+    Returns:
+        float. The Sharpe ratio.
+    """
+    if zp_math.tolerant_equals(algorithm_volatility, 0):
+        return np.nan
+
+    return (
+        (annualized_return - treasury_return)
+        # The square of the annualization factor is in the volatility,
+        # because the volatility is also annualized,
+        # i.e. the sqrt(annual factor) is in the volatility's numerator.
+        # So to have the the correct annualization factor for the
+        # Sharpe value's numerator, which should be the sqrt(annual factor).
+        # The square of the sqrt of the annual factor, i.e. the annual factor
+        # itself, is needed in the numerator to factor out the division by
+        # its square root.
+        / algorithm_volatility)
 
 
 class RiskMetricsCumulative(object):
@@ -55,6 +88,7 @@ class RiskMetricsCumulative(object):
         """
 
         self.treasury_curves = trading.environment.treasury_curves
+        self.treasury_period_returns = []
         self.start_date = sim_params.period_start.replace(
             hour=0, minute=0, second=0, microsecond=0
         )
@@ -85,11 +119,14 @@ class RiskMetricsCumulative(object):
 
         self.algorithm_returns_cont = pd.Series(index=cont_index)
         self.benchmark_returns_cont = pd.Series(index=cont_index)
+        self.annualized_mean_returns_cont = pd.Series(index=cont_index)
 
         # The returns at a given time are read and reset from the respective
         # returns container.
         self.algorithm_returns = None
         self.benchmark_returns = None
+
+        self.annualized_mean_returns = None
 
         self.compounded_log_returns = []
 
@@ -108,7 +145,7 @@ class RiskMetricsCumulative(object):
         self.max_drawdown = 0
         self.current_max = -np.inf
         self.excess_returns = []
-        self.daily_treasury = {}
+        self.daily_treasury = pd.Series(index=self.trading_days)
 
     def get_minute_index(self, sim_params):
         return pd.date_range(sim_params.first_open, sim_params.last_close,
@@ -124,6 +161,14 @@ class RiskMetricsCumulative(object):
     def update(self, dt, algorithm_returns, benchmark_returns):
         self.algorithm_returns_cont[dt] = algorithm_returns
         self.algorithm_returns = self.algorithm_returns_cont.valid()
+
+        mean_return = (np.sum(self.algorithm_returns)
+                       /
+                       np.size(self.algorithm_returns))
+
+        self.annualized_mean_returns_cont[dt] = mean_return * 252
+        self.annualized_mean_returns = \
+            self.annualized_mean_returns_cont.valid()
 
         self.benchmark_returns_cont[dt] = benchmark_returns
         self.benchmark_returns = self.benchmark_returns_cont.valid()
@@ -162,7 +207,7 @@ algorithm_returns ({algo_count}) in range {start} : {end} on {dt}"
         # curves on every minute.
         treasury_end = self.algorithm_returns.index[-1].replace(
             hour=0, minute=0)
-        if treasury_end not in self.daily_treasury:
+        if np.isnan(self.daily_treasury[treasury_end]):
             treasury_period_return = choose_treasury(
                 self.treasury_curves,
                 self.start_date,
@@ -172,6 +217,7 @@ algorithm_returns ({algo_count}) in range {start} : {end} on {dt}"
                 treasury_period_return
         self.treasury_period_return = \
             self.daily_treasury[treasury_end]
+        self.treasury_period_returns.append(self.treasury_period_return)
         self.excess_returns.append(
             self.algorithm_period_returns[-1] - self.treasury_period_return)
         self.metrics.beta[dt] = self.calculate_beta()
@@ -290,8 +336,8 @@ algorithm_returns ({algo_count}) in range {start} : {end} on {dt}"
         http://en.wikipedia.org/wiki/Sharpe_ratio
         """
         return sharpe_ratio(self.algorithm_volatility[-1],
-                            self.algorithm_period_returns[-1],
-                            self.treasury_period_return)
+                            self.annualized_mean_returns[-1],
+                            self.daily_treasury.valid()[-1])
 
     def calculate_sortino(self, mar=None):
         """
@@ -322,7 +368,7 @@ algorithm_returns ({algo_count}) in range {start} : {end} on {dt}"
                      self.metrics.beta[dt])
 
     def calculate_volatility(self, daily_returns):
-        return np.std(daily_returns, ddof=1) * math.sqrt(self.num_trading_days)
+        return np.std(daily_returns) * math.sqrt(252)
 
     def calculate_beta(self):
         """

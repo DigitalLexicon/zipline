@@ -145,8 +145,8 @@ class TestEventsThroughRisk(unittest.TestCase):
         #       at least be an early warning against changes.
         expected_sharpe = {
             first_date: np.nan,
-            second_date: -1.630920,
-            third_date: -1.016842,
+            second_date: -31.56903265,
+            third_date: -11.459888981,
         }
 
         for bar in gen:
@@ -154,8 +154,8 @@ class TestEventsThroughRisk(unittest.TestCase):
             crm = algo.perf_tracker.cumulative_risk_metrics
 
             np.testing.assert_almost_equal(
-                expected_algorithm_returns[current_dt],
                 crm.algorithm_returns[-1],
+                expected_algorithm_returns[current_dt],
                 decimal=6)
 
             np.testing.assert_almost_equal(
@@ -304,7 +304,8 @@ class TestEventsThroughRisk(unittest.TestCase):
             self.assertEqual(1, len(algo.portfolio.positions), "There should "
                              "be one position after the first day.")
 
-            self.assertTrue(
+            self.assertEqual(
+                0.0,
                 np.isnan(crm.algorithm_volatility[-1]),
                 "On the first day algorithm volatility does not exist.")
 
